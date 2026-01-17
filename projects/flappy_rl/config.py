@@ -26,7 +26,7 @@ class FlappyConfig:
     gamma: float = 0.99  # Discount factor
     epsilon_start: float = 1.0
     epsilon_end: float = 0.01
-    epsilon_decay: float = 0.995
+    epsilon_decay: float = 0.9984  # ~0.2 at 1000 eps, hits epsilon_end ~2900 eps
     batch_size: int = 64
     memory_size: int = 100000
     target_update: int = 10  # Episodes between target network updates
