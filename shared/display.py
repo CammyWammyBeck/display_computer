@@ -19,7 +19,8 @@ class DisplayManager:
         pygame.init()
         pygame.font.init()
 
-        flags = pygame.SCALED
+        # Use hardware acceleration and double buffering for smoother rendering
+        flags = pygame.DOUBLEBUF | pygame.HWSURFACE
         if config.fullscreen:
             flags |= pygame.FULLSCREEN
 

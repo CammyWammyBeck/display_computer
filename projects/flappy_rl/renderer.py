@@ -48,6 +48,31 @@ class FlappyRenderer:
         self.font_large = pygame.font.Font(None, 48)
         self.font_score = pygame.font.Font(None, 72)
 
+        # Pre-render static elements for performance
+        self._background_surface = None
+        self._init_cached_surfaces()
+
+    def _init_cached_surfaces(self):
+        """Pre-render static elements for better performance."""
+        # Pre-render gradient background
+        width = self._scale(cfg.game_width)
+        height = self._scale(cfg.game_height)
+        self._background_surface = pygame.Surface((width, height))
+
+        for i in range(height):
+            progress = i / height
+            color = (
+                int(70 + 30 * progress),
+                int(180 - 40 * progress),
+                int(220 - 80 * progress)
+            )
+            pygame.draw.line(
+                self._background_surface,
+                color,
+                (0, i),
+                (width, i)
+            )
+
     def _scale(self, value: float) -> int:
         """Scale a game coordinate to screen coordinate."""
         return int(value * self.game_scale)
@@ -92,30 +117,17 @@ class FlappyRenderer:
             self._draw_game_over()
 
     def _draw_background(self):
-        """Draw the sky background."""
+        """Draw the sky background using pre-rendered surface."""
+        # Blit pre-rendered gradient (much faster than drawing lines each frame)
+        self.screen.blit(self._background_surface, (self.game_offset_x, self.game_offset_y))
+
+        # Border
         game_rect = pygame.Rect(
             self.game_offset_x,
             self.game_offset_y,
             self._scale(cfg.game_width),
             self._scale(cfg.game_height)
         )
-
-        # Gradient sky
-        for i in range(game_rect.height):
-            progress = i / game_rect.height
-            color = (
-                int(70 + 30 * progress),
-                int(180 - 40 * progress),
-                int(220 - 80 * progress)
-            )
-            pygame.draw.line(
-                self.screen,
-                color,
-                (game_rect.left, game_rect.top + i),
-                (game_rect.right, game_rect.top + i)
-            )
-
-        # Border
         pygame.draw.rect(self.screen, (50, 50, 70), game_rect, 3, border_radius=5)
 
     def _draw_ground(self):
