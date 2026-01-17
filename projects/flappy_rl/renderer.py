@@ -65,7 +65,8 @@ class FlappyRenderer:
         agent_stats: dict,
         show_network: bool = False,
         q_values: np.ndarray = None,
-        activations: list = None
+        activations: list = None,
+        observation: np.ndarray = None
     ):
         """Render the complete frame."""
         self.time += 1 / 60
@@ -84,7 +85,7 @@ class FlappyRenderer:
 
         # Draw neural network visualization if enabled
         if show_network and q_values is not None:
-            self._draw_network_viz(q_values, activations)
+            self._draw_network_viz(q_values, activations, observation)
 
         # Draw game over overlay if dead
         if game_state["done"]:
@@ -284,42 +285,140 @@ class FlappyRenderer:
         self.screen.blit(score_label, (x, y + 8))
         self.screen.blit(score_value, (x + 120, y))
 
-    def _draw_network_viz(self, q_values: np.ndarray, activations: list):
-        """Draw neural network visualization."""
-        x = self.stats_x
-        y = self.stats_y + 400
+    def _draw_network_viz(self, q_values: np.ndarray, activations: list, observation: np.ndarray = None):
+        """
+        Draw neural network visualization showing nodes and connections.
+
+        Network: 4 inputs → 64 hidden → 64 hidden → 2 outputs
+        """
+        # Panel position and size
+        panel_x = self.stats_x
+        panel_y = self.stats_y + 380
+        panel_width = 380
+        panel_height = 320
+
+        # Draw panel background
+        pygame.draw.rect(
+            self.screen,
+            (25, 25, 40),
+            (panel_x - 10, panel_y - 10, panel_width, panel_height),
+            border_radius=10
+        )
 
         # Title
-        title = self.font_medium.render("Q-Values", True, (150, 150, 150))
-        self.screen.blit(title, (x, y))
-        y += 35
+        title = self.font_medium.render("NEURAL NETWORK", True, (150, 150, 150))
+        self.screen.blit(title, (panel_x, panel_y))
+        panel_y += 35
 
-        # Q-values as bars
-        actions = ["Do Nothing", "Flap"]
-        max_q = max(abs(q_values.max()), abs(q_values.min()), 1)
+        # Network layout
+        layer_sizes = [4, 8, 8, 2]  # Visualized sizes (hidden layers subsampled)
+        layer_labels = ["Input", "Hidden 1", "Hidden 2", "Output"]
+        layer_x_positions = [panel_x + 30, panel_x + 130, panel_x + 230, panel_x + 330]
 
-        for i, (action, q) in enumerate(zip(actions, q_values)):
-            # Action label
-            label = self.font_small.render(action, True, (200, 200, 200))
-            self.screen.blit(label, (x, y))
+        # Prepare activation values for each layer
+        input_vals = observation if observation is not None else np.zeros(4)
+        hidden1_vals = activations[0] if activations and len(activations) > 0 else np.zeros(64)
+        hidden2_vals = activations[1] if activations and len(activations) > 1 else np.zeros(64)
+        output_vals = q_values if q_values is not None else np.zeros(2)
 
-            # Q-value bar
-            bar_x = x + 100
-            bar_width = int(abs(q) / max_q * 150)
-            bar_color = global_config.success_color if q > 0 else global_config.warning_color
+        # Subsample hidden layers for visualization (show 8 representative nodes)
+        hidden1_vis = hidden1_vals[::8][:8]  # Every 8th node
+        hidden2_vis = hidden2_vals[::8][:8]
 
-            if q >= 0:
-                bar_rect = pygame.Rect(bar_x, y, bar_width, 20)
-            else:
-                bar_rect = pygame.Rect(bar_x - bar_width, y, bar_width, 20)
+        layer_activations = [input_vals, hidden1_vis, hidden2_vis, output_vals]
 
-            pygame.draw.rect(self.screen, bar_color, bar_rect, border_radius=3)
+        # Calculate node positions
+        node_positions = []
+        for layer_idx, (size, x_pos) in enumerate(zip(layer_sizes, layer_x_positions)):
+            layer_nodes = []
+            total_height = 200
+            spacing = total_height / (size + 1)
+            start_y = panel_y + 30
 
-            # Q-value text
-            q_text = self.font_small.render(f"{q:.2f}", True, (255, 255, 255))
-            self.screen.blit(q_text, (bar_x + 160, y))
+            for node_idx in range(size):
+                y = start_y + spacing * (node_idx + 1)
+                layer_nodes.append((x_pos, int(y)))
+            node_positions.append(layer_nodes)
 
-            y += 30
+        # Draw connections (before nodes so they appear behind)
+        for layer_idx in range(len(node_positions) - 1):
+            from_layer = node_positions[layer_idx]
+            to_layer = node_positions[layer_idx + 1]
+
+            for from_pos in from_layer:
+                for to_pos in to_layer:
+                    # Connection color based on a simple pattern
+                    alpha = 30
+                    pygame.draw.line(
+                        self.screen,
+                        (60, 60, 80),
+                        from_pos,
+                        to_pos,
+                        1
+                    )
+
+        # Draw nodes with activation colors
+        node_radius = 12
+        input_labels = ["Bird Y", "Velocity", "Pipe Dist", "Gap Dist"]
+        output_labels = ["Stay", "Flap"]
+
+        for layer_idx, (layer_nodes, acts) in enumerate(zip(node_positions, layer_activations)):
+            for node_idx, (x, y) in enumerate(layer_nodes):
+                # Get activation value
+                if node_idx < len(acts):
+                    activation = float(acts[node_idx])
+                else:
+                    activation = 0.0
+
+                # Color based on activation (blue = negative, gray = zero, orange/red = positive)
+                intensity = min(abs(activation) / 2.0, 1.0)  # Normalize
+
+                if activation > 0:
+                    # Positive: orange to red
+                    r = int(100 + 155 * intensity)
+                    g = int(100 + 100 * (1 - intensity))
+                    b = int(80 * (1 - intensity))
+                elif activation < 0:
+                    # Negative: blue
+                    r = int(80 * (1 - intensity))
+                    g = int(100 + 100 * (1 - intensity))
+                    b = int(100 + 155 * intensity)
+                else:
+                    # Zero: gray
+                    r, g, b = 100, 100, 100
+
+                node_color = (r, g, b)
+
+                # Draw node glow for strong activations
+                if intensity > 0.3:
+                    glow_radius = int(node_radius + 8 * intensity)
+                    glow_surface = pygame.Surface((glow_radius * 2, glow_radius * 2), pygame.SRCALPHA)
+                    glow_alpha = int(50 * intensity)
+                    pygame.draw.circle(glow_surface, (*node_color, glow_alpha), (glow_radius, glow_radius), glow_radius)
+                    self.screen.blit(glow_surface, (x - glow_radius, y - glow_radius))
+
+                # Draw node
+                pygame.draw.circle(self.screen, node_color, (x, y), node_radius)
+                pygame.draw.circle(self.screen, (200, 200, 200), (x, y), node_radius, 1)
+
+                # Draw labels for input/output layers
+                if layer_idx == 0 and node_idx < len(input_labels):
+                    label = self.font_small.render(input_labels[node_idx], True, (120, 120, 120))
+                    self.screen.blit(label, (x - label.get_width() - 15, y - 8))
+                elif layer_idx == 3 and node_idx < len(output_labels):
+                    label = self.font_small.render(output_labels[node_idx], True, (120, 120, 120))
+                    self.screen.blit(label, (x + 18, y - 8))
+
+                    # Show Q-value next to output
+                    if q_values is not None and node_idx < len(q_values):
+                        q_text = self.font_small.render(f"{q_values[node_idx]:.2f}", True, node_color)
+                        self.screen.blit(q_text, (x + 18, y + 8))
+
+        # Highlight the chosen action
+        if q_values is not None:
+            chosen = np.argmax(q_values)
+            chosen_pos = node_positions[3][chosen]
+            pygame.draw.circle(self.screen, global_config.success_color, chosen_pos, node_radius + 4, 3)
 
     def _draw_game_over(self):
         """Draw game over overlay."""

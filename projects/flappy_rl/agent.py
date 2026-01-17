@@ -30,11 +30,85 @@ class DQN(nn.Module):
         return self.network(x)
 
 
-class ReplayBuffer:
-    """Experience replay buffer for DQN."""
+class SumTree:
+    """
+    Sum tree data structure for efficient prioritized sampling.
+    Each leaf holds a priority, and we can sample proportionally in O(log n).
+    """
 
-    def __init__(self, capacity: int = 100000):
-        self.buffer = deque(maxlen=capacity)
+    def __init__(self, capacity: int):
+        self.capacity = capacity
+        self.tree = np.zeros(2 * capacity - 1)
+        self.data = np.zeros(capacity, dtype=object)
+        self.write_idx = 0
+        self.size = 0
+
+    def _propagate(self, idx: int, change: float):
+        """Propagate priority change up the tree."""
+        parent = (idx - 1) // 2
+        self.tree[parent] += change
+        if parent != 0:
+            self._propagate(parent, change)
+
+    def _retrieve(self, idx: int, value: float) -> int:
+        """Find the leaf index for a given cumulative value."""
+        left = 2 * idx + 1
+        right = left + 1
+
+        if left >= len(self.tree):
+            return idx
+
+        if value <= self.tree[left]:
+            return self._retrieve(left, value)
+        else:
+            return self._retrieve(right, value - self.tree[left])
+
+    def total(self) -> float:
+        """Get total priority sum."""
+        return self.tree[0]
+
+    def add(self, priority: float, data):
+        """Add data with given priority."""
+        idx = self.write_idx + self.capacity - 1
+        self.data[self.write_idx] = data
+        self.update(idx, priority)
+        self.write_idx = (self.write_idx + 1) % self.capacity
+        self.size = min(self.size + 1, self.capacity)
+
+    def update(self, idx: int, priority: float):
+        """Update priority at tree index."""
+        change = priority - self.tree[idx]
+        self.tree[idx] = priority
+        self._propagate(idx, change)
+
+    def get(self, value: float) -> tuple[int, float, object]:
+        """Get leaf index, priority, and data for cumulative value."""
+        idx = self._retrieve(0, value)
+        data_idx = idx - self.capacity + 1
+        return idx, self.tree[idx], self.data[data_idx]
+
+
+class PrioritizedReplayBuffer:
+    """
+    Prioritized Experience Replay buffer.
+    Samples transitions with probability proportional to their TD error.
+    """
+
+    def __init__(
+        self,
+        capacity: int = 100000,
+        alpha: float = 0.6,
+        beta_start: float = 0.4,
+        beta_frames: int = 100000
+    ):
+        self.tree = SumTree(capacity)
+        self.capacity = capacity
+        self.alpha = alpha  # Priority exponent (0 = uniform, 1 = full prioritization)
+        self.beta_start = beta_start  # Importance sampling start
+        self.beta_frames = beta_frames
+        self.frame = 0
+        self.max_priority = 1.0
+        self.min_priority = 0.01
 
     def push(
         self,
@@ -44,12 +118,41 @@ class ReplayBuffer:
         next_state: np.ndarray,
         done: bool
     ):
-        """Add experience to buffer."""
-        self.buffer.append((state, action, reward, next_state, done))
+        """Add experience with max priority (will be updated after training)."""
+        data = (state, action, reward, next_state, done)
+        priority = self.max_priority ** self.alpha
+        self.tree.add(priority, data)
 
     def sample(self, batch_size: int) -> tuple:
-        """Sample a batch of experiences."""
-        batch = random.sample(self.buffer, batch_size)
+        """Sample a prioritized batch."""
+        self.frame += 1
+        beta = min(1.0, self.beta_start + (1.0 - self.beta_start) * self.frame / self.beta_frames)
+
+        batch = []
+        indices = []
+        priorities = []
+        segment = self.tree.total() / batch_size
+
+        for i in range(batch_size):
+            low = segment * i
+            high = segment * (i + 1)
+            value = random.uniform(low, high)
+            idx, priority, data = self.tree.get(value)
+
+            if data is None or (isinstance(data, (int, float)) and data == 0):
+                # Handle edge case of empty slot
+                value = random.uniform(0, self.tree.total())
+                idx, priority, data = self.tree.get(value)
+
+            batch.append(data)
+            indices.append(idx)
+            priorities.append(priority)
+
+        # Compute importance sampling weights
+        priorities = np.array(priorities) + 1e-6
+        probs = priorities / self.tree.total()
+        weights = (self.tree.size * probs) ** (-beta)
+        weights = weights / weights.max()
 
         states = np.array([e[0] for e in batch])
         actions = np.array([e[1] for e in batch])
@@ -57,10 +160,17 @@ class ReplayBuffer:
         next_states = np.array([e[3] for e in batch])
         dones = np.array([e[4] for e in batch])
 
-        return states, actions, rewards, next_states, dones
+        return states, actions, rewards, next_states, dones, indices, weights
+
+    def update_priorities(self, indices: list, td_errors: np.ndarray):
+        """Update priorities based on TD errors."""
+        for idx, td_error in zip(indices, td_errors):
+            priority = (abs(td_error) + self.min_priority) ** self.alpha
+            self.max_priority = max(self.max_priority, priority)
+            self.tree.update(idx, priority)
 
     def __len__(self) -> int:
-        return len(self.buffer)
+        return self.tree.size
 
 
 class DQNAgent:
@@ -83,8 +193,8 @@ class DQNAgent:
         # Optimizer
         self.optimizer = optim.Adam(self.policy_net.parameters(), lr=cfg.learning_rate)
 
-        # Replay buffer
-        self.memory = ReplayBuffer(cfg.memory_size)
+        # Prioritized replay buffer
+        self.memory = PrioritizedReplayBuffer(cfg.memory_size)
 
         # Exploration
         self.epsilon = cfg.epsilon_start
@@ -140,7 +250,7 @@ class DQNAgent:
 
     def train_step(self) -> float | None:
         """
-        Perform one training step.
+        Perform one training step with Double DQN and Prioritized Experience Replay.
 
         Returns:
             Loss value or None if not enough samples
@@ -148,8 +258,9 @@ class DQNAgent:
         if len(self.memory) < cfg.batch_size:
             return None
 
-        # Sample batch
-        states, actions, rewards, next_states, dones = self.memory.sample(cfg.batch_size)
+        # Sample prioritized batch
+        states, actions, rewards, next_states, dones, indices, weights = \
+            self.memory.sample(cfg.batch_size)
 
         # Convert to tensors
         states = torch.FloatTensor(states).to(self.device)
@@ -157,23 +268,33 @@ class DQNAgent:
         rewards = torch.FloatTensor(rewards).to(self.device)
         next_states = torch.FloatTensor(next_states).to(self.device)
         dones = torch.FloatTensor(dones).to(self.device)
+        weights = torch.FloatTensor(weights).to(self.device)
 
         # Compute current Q values
-        current_q = self.policy_net(states).gather(1, actions.unsqueeze(1))
+        current_q = self.policy_net(states).gather(1, actions.unsqueeze(1)).squeeze()
 
-        # Compute target Q values
+        # Compute target Q values using Double DQN
+        # Use policy net to select actions, target net to evaluate them
         with torch.no_grad():
-            next_q = self.target_net(next_states).max(1)[0]
+            next_actions = self.policy_net(next_states).argmax(1, keepdim=True)
+            next_q = self.target_net(next_states).gather(1, next_actions).squeeze()
             target_q = rewards + (1 - dones) * cfg.gamma * next_q
 
-        # Compute loss
-        loss = nn.MSELoss()(current_q.squeeze(), target_q)
+        # Compute TD errors for priority updates
+        td_errors = (current_q - target_q).detach().cpu().numpy()
+
+        # Compute weighted loss (importance sampling correction)
+        element_wise_loss = (current_q - target_q) ** 2
+        loss = (weights * element_wise_loss).mean()
 
         # Optimize
         self.optimizer.zero_grad()
         loss.backward()
         torch.nn.utils.clip_grad_norm_(self.policy_net.parameters(), 1.0)
         self.optimizer.step()
+
+        # Update priorities in replay buffer
+        self.memory.update_priorities(indices, td_errors)
 
         loss_value = loss.item()
         self.losses.append(loss_value)

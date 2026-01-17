@@ -52,6 +52,14 @@ class FlappyRLProject(BaseProject):
         self.preview_counter = 0
         self.last_episode = 0
 
+        # Replay system
+        self.current_episode_frames: list[dict] = []  # Recording current episode
+        self.best_run_frames: list[dict] = []  # Best run recording
+        self.best_run_score: int = 0
+        self.replay_mode = False
+        self.replay_index = 0
+        self.replay_speed = 1  # Frames per update
+
         # Setup controls
         self._setup_controls()
 
@@ -77,6 +85,11 @@ class FlappyRLProject(BaseProject):
             type="button",
             id="load",
             label="Load Best"
+        ))
+        self.add_control(ProjectControl(
+            type="button",
+            id="replay",
+            label="Replay Best Run"
         ))
         self.add_control(ProjectControl(
             type="toggle",
@@ -129,7 +142,9 @@ class FlappyRLProject(BaseProject):
         if self.paused:
             return
 
-        if self.training_mode:
+        if self.replay_mode:
+            self._update_replay_mode()
+        elif self.training_mode:
             self._update_training_mode()
         else:
             self._update_watch_mode()
@@ -151,6 +166,12 @@ class FlappyRLProject(BaseProject):
             if self.game.done:
                 break
 
+            # Record frame for potential best run
+            self.current_episode_frames.append({
+                "game_state": self.game.get_state(),
+                "observation": self.current_state.copy() if self.current_state is not None else None,
+            })
+
             # Agent selects action
             action = self.agent.select_action(self.current_state)
 
@@ -170,9 +191,33 @@ class FlappyRLProject(BaseProject):
             self.current_state = next_state
 
             if done:
-                self.agent.end_episode(info["score"])
+                score = info["score"]
+                self.agent.end_episode(score)
+
+                # Check if this is a new best run
+                if score > self.best_run_score and len(self.current_episode_frames) > 0:
+                    self.best_run_score = score
+                    self.best_run_frames = self.current_episode_frames.copy()
+                    print(f"New best run recorded: {score} points ({len(self.best_run_frames)} frames)")
+
+                # Clear recording for next episode
+                self.current_episode_frames = []
+
                 self.restart_delay = 60  # Show death for 1 second
                 break
+
+    def _update_replay_mode(self):
+        """Update replay playback."""
+        if not self.best_run_frames:
+            self.replay_mode = False
+            return
+
+        # Advance replay
+        self.replay_index += self.replay_speed
+
+        # Check if replay is complete
+        if self.replay_index >= len(self.best_run_frames):
+            self.replay_index = 0  # Loop replay
 
     def _update_training_mode(self):
         """Update in training mode - run many episodes per frame."""
@@ -244,7 +289,9 @@ class FlappyRLProject(BaseProject):
 
     def render(self):
         """Render the game and UI."""
-        if self.training_mode:
+        if self.replay_mode:
+            self._render_replay_mode()
+        elif self.training_mode:
             self._render_training_mode()
         else:
             self._render_watch_mode()
@@ -264,8 +311,38 @@ class FlappyRLProject(BaseProject):
             agent_stats=self.agent.get_stats(),
             show_network=self.show_network,
             q_values=q_values,
-            activations=activations
+            activations=activations,
+            observation=self.current_state
         )
+
+    def _render_replay_mode(self):
+        """Render replay of best run."""
+        if not self.best_run_frames or self.replay_index >= len(self.best_run_frames):
+            return
+
+        frame = self.best_run_frames[self.replay_index]
+        game_state = frame["game_state"]
+        observation = frame.get("observation")
+
+        # Get Q-values for the recorded observation
+        q_values = None
+        activations = None
+        if self.show_network and observation is not None:
+            q_values = self.agent.get_q_values(observation)
+            activations = self.agent.get_network_activations(observation)
+
+        # Render the recorded frame
+        self.renderer.render(
+            game_state=game_state,
+            agent_stats=self.agent.get_stats(),
+            show_network=self.show_network,
+            q_values=q_values,
+            activations=activations,
+            observation=observation
+        )
+
+        # Draw replay overlay
+        self._draw_replay_overlay()
 
         # Draw pause overlay
         if self.paused:
@@ -308,6 +385,43 @@ class FlappyRLProject(BaseProject):
         self.screen.blit(overlay, (0, 0))
         self.screen.blit(text, rect)
 
+    def _draw_replay_overlay(self):
+        """Draw replay mode indicator."""
+        font_large = pygame.font.Font(None, 48)
+        font_small = pygame.font.Font(None, 24)
+
+        # Replay banner
+        banner_text = font_large.render("REPLAY - BEST RUN", True, (255, 200, 100))
+        self.screen.blit(banner_text, (20, 20))
+
+        # Score and progress
+        score_text = font_small.render(f"Score: {self.best_run_score}", True, (200, 200, 200))
+        self.screen.blit(score_text, (20, 60))
+
+        progress = self.replay_index / max(len(self.best_run_frames), 1)
+        progress_text = font_small.render(
+            f"Frame {self.replay_index}/{len(self.best_run_frames)}",
+            True, (150, 150, 150)
+        )
+        self.screen.blit(progress_text, (20, 80))
+
+        # Progress bar
+        bar_width = 200
+        bar_height = 8
+        bar_x = 20
+        bar_y = 105
+        pygame.draw.rect(self.screen, (50, 50, 70), (bar_x, bar_y, bar_width, bar_height), border_radius=4)
+        pygame.draw.rect(
+            self.screen,
+            (255, 200, 100),
+            (bar_x, bar_y, int(bar_width * progress), bar_height),
+            border_radius=4
+        )
+
+        # Instructions
+        hint_text = font_small.render("Press ESC or P to exit replay", True, (100, 100, 100))
+        self.screen.blit(hint_text, (20, global_config.screen_height - 30))
+
     def _draw_controls_hint(self):
         """Draw keyboard controls hint."""
         font = pygame.font.Font(None, 24)
@@ -315,6 +429,7 @@ class FlappyRLProject(BaseProject):
             "ESC: Return to menu",
             "SPACE: Pause",
             "T: Training mode",
+            "P: Replay best run",
             "N: Toggle network view",
             "+/-: Adjust speed",
             "R: Reset training",
@@ -342,6 +457,23 @@ class FlappyRLProject(BaseProject):
             self.current_state = self.game.reset()
             self.restart_delay = 0
 
+    def _toggle_replay_mode(self):
+        """Toggle replay mode."""
+        if self.replay_mode:
+            # Exit replay
+            self.replay_mode = False
+            self.replay_index = 0
+            print("Exited replay mode")
+        else:
+            # Enter replay
+            if self.best_run_frames:
+                self.replay_mode = True
+                self.replay_index = 0
+                self.training_mode = False
+                print(f"Playing best run ({self.best_run_score} points)")
+            else:
+                print("No best run recorded yet")
+
     def handle_event(self, event: pygame.event.Event) -> bool:
         """Handle keyboard input."""
         if event.type == pygame.KEYDOWN:
@@ -351,6 +483,10 @@ class FlappyRLProject(BaseProject):
 
             elif event.key == pygame.K_t:
                 self._toggle_training_mode()
+                return True
+
+            elif event.key == pygame.K_p:
+                self._toggle_replay_mode()
                 return True
 
             elif event.key == pygame.K_n:
@@ -409,6 +545,14 @@ class FlappyRLProject(BaseProject):
             return {
                 "status": "ok" if success else "error",
                 "message": "Loaded best model" if success else "No model found"
+            }
+
+        elif command == "replay":
+            self._toggle_replay_mode()
+            return {
+                "status": "ok",
+                "replay_mode": self.replay_mode,
+                "message": f"Replay {'started' if self.replay_mode else 'stopped'}"
             }
 
         elif command == "show_network":
