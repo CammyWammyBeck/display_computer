@@ -35,6 +35,14 @@ class FlappyConfig:
     train_speed_multiplier: int = 1  # How many game steps per frame
     num_parallel_birds: int = 1  # For visualization, show one bird
 
+    # Training mode (fast training with graphs instead of game render)
+    training_mode: bool = False
+    episodes_per_frame: int = 10  # Full episodes to run per render frame in training mode
+    max_episodes_per_frame: int = 50  # Maximum for speed slider
+    graph_history_length: int = 500  # Episodes to show in graphs
+    preview_interval: int = 50  # Show mini game preview every N episodes
+    preview_duration: int = 1  # How many episodes to show in preview
+
     # Rewards
     reward_alive: float = 0.1
     reward_pipe: float = 10.0

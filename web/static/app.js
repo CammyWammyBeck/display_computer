@@ -6,7 +6,9 @@ class DisplayController {
     constructor() {
         this.ws = null;
         this.state = null;
+        this.stats = null;
         this.reconnectInterval = null;
+        this.controlsRendered = false;
 
         this.init();
     }
@@ -24,6 +26,7 @@ class DisplayController {
             projectList: document.getElementById('project-list'),
             currentProject: document.getElementById('current-project'),
             projectName: document.getElementById('project-name'),
+            projectMode: document.getElementById('project-mode'),
             statsPanel: document.getElementById('stats-panel'),
             controlsPanel: document.getElementById('controls-panel'),
             returnMenu: document.getElementById('return-menu'),
@@ -105,10 +108,12 @@ class DisplayController {
                 this.updateState(message.data);
                 break;
             case 'stats':
+                this.stats = message.data;
                 this.updateStats(message.data);
+                this.updateModeIndicator(message.data);
                 break;
             case 'project_change':
-                // Refresh state on project change
+                this.controlsRendered = false;
                 break;
         }
     }
@@ -124,9 +129,16 @@ class DisplayController {
             this.elements.projectSelector.classList.add('hidden');
             this.elements.currentProject.classList.remove('hidden');
             this.elements.projectName.textContent = state.current_project.name;
+
+            // Render controls once when project is selected
+            if (!this.controlsRendered) {
+                this.renderDefaultControls();
+                this.controlsRendered = true;
+            }
         } else {
             this.elements.projectSelector.classList.remove('hidden');
             this.elements.currentProject.classList.add('hidden');
+            this.controlsRendered = false;
         }
     }
 
@@ -152,6 +164,21 @@ class DisplayController {
 
             container.appendChild(card);
         });
+    }
+
+    updateModeIndicator(stats) {
+        const modeEl = this.elements.projectMode;
+        if (!modeEl) return;
+
+        const isTraining = stats.training_mode === true;
+        modeEl.textContent = isTraining ? 'Training Mode' : 'Watch Mode';
+        modeEl.className = 'mode-badge ' + (isTraining ? 'training' : 'watch');
+
+        // Update toggle state if it exists
+        const toggle = document.querySelector('[data-id="training_mode"]');
+        if (toggle) {
+            toggle.classList.toggle('active', isTraining);
+        }
     }
 
     updateStats(stats) {
@@ -196,6 +223,21 @@ class DisplayController {
         });
     }
 
+    renderDefaultControls() {
+        // Render the standard Flappy RL controls
+        const controls = [
+            { type: 'toggle', id: 'training_mode', label: 'Training Mode', value: false },
+            { type: 'toggle', id: 'pause', label: 'Pause', value: false },
+            { type: 'slider', id: 'speed', label: 'Speed', value: 1, min_value: 1, max_value: 50, step: 1 },
+            { type: 'toggle', id: 'show_network', label: 'Show Network', value: false },
+            { type: 'button', id: 'save', label: 'Save Model' },
+            { type: 'button', id: 'load', label: 'Load Best' },
+            { type: 'button', id: 'reset', label: 'Reset Training' },
+        ];
+
+        this.renderControls(controls);
+    }
+
     renderControls(controls) {
         const container = this.elements.controlsPanel;
         container.innerHTML = '';
@@ -213,15 +255,30 @@ class DisplayController {
             case 'button':
                 const btn = document.createElement('button');
                 btn.className = 'btn';
+                if (control.id === 'reset') {
+                    btn.className = 'btn btn-danger';
+                }
                 btn.textContent = control.label;
                 btn.addEventListener('click', () => {
-                    this.sendCommand(control.id);
+                    if (control.id === 'reset') {
+                        if (confirm('Reset all training progress?')) {
+                            this.sendCommand(control.id);
+                        }
+                    } else {
+                        this.sendCommand(control.id);
+                    }
                 });
                 return btn;
 
             case 'toggle':
                 const toggleDiv = document.createElement('div');
                 toggleDiv.className = 'toggle-control';
+
+                // Special styling for training mode toggle
+                if (control.id === 'training_mode') {
+                    toggleDiv.classList.add('featured');
+                }
+
                 toggleDiv.innerHTML = `
                     <label>${control.label}</label>
                     <div class="toggle ${control.value ? 'active' : ''}" data-id="${control.id}"></div>
