@@ -52,9 +52,18 @@ def ensure_display():
     # Pass through any arguments
     args = sys.argv[1:]
 
+    # Detect current VT for xinit
+    vt = "vt1"  # default
+    try:
+        tty_path = os.ttyname(0)  # e.g., /dev/tty2
+        if tty_path.startswith("/dev/tty"):
+            vt = "vt" + tty_path.replace("/dev/tty", "")
+    except Exception:
+        pass
+
     # xinit runs our script directly as the only X client
     # When our script exits, X exits too (perfect for a display kiosk)
-    cmd = [xinit_path, sys.executable, str(script_path)] + args + ["--", "-nocursor"]
+    cmd = [xinit_path, sys.executable, str(script_path)] + args + ["--", ":0", vt, "-nocursor"]
 
     os.execvp(xinit_path, cmd)
     # execvp does not return - process is replaced
