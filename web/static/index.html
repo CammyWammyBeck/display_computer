@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Display Computer Control</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Display Computer</h1>
+            <div id="connection-status" class="status disconnected">
+                <span class="dot"></span>
+                <span class="text">Disconnected</span>
+            </div>
+        </header>
+
+        <main>
+            <!-- Project Selector -->
+            <section id="project-selector" class="card">
+                <h2>Projects</h2>
+                <div id="project-list" class="project-grid">
+                    <!-- Populated by JS -->
+                </div>
+            </section>
+
+            <!-- Current Project Panel -->
+            <section id="current-project" class="card hidden">
+                <div class="project-header">
+                    <h2 id="project-name">-</h2>
+                    <button id="return-menu" class="btn btn-secondary">Return to Menu</button>
+                </div>
+
+                <!-- Stats Display -->
+                <div id="stats-panel" class="stats-grid">
+                    <!-- Populated by JS -->
+                </div>
+
+                <!-- Controls -->
+                <div id="controls-panel" class="controls-grid">
+                    <!-- Populated by JS -->
+                </div>
+            </section>
+
+            <!-- Quick Actions -->
+            <section class="card">
+                <h2>System</h2>
+                <div class="button-row">
+                    <button id="btn-menu" class="btn">Show Menu</button>
+                    <button id="btn-shutdown" class="btn btn-danger">Shutdown</button>
+                </div>
+            </section>
+        </main>
+
+        <footer>
+            <p>Display Computer Control Panel</p>
+        </footer>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

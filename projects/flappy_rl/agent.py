@@ -1,0 +1,262 @@
+"""DQN Agent for Flappy Bird."""
+
+import random
+from collections import deque
+from pathlib import Path
+
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.optim as optim
+
+from .config import flappy_config as cfg
+
+
+class DQN(nn.Module):
+    """Deep Q-Network."""
+
+    def __init__(self, input_size: int = 4, output_size: int = 2):
+        super().__init__()
+
+        self.network = nn.Sequential(
+            nn.Linear(input_size, 64),
+            nn.ReLU(),
+            nn.Linear(64, 64),
+            nn.ReLU(),
+            nn.Linear(64, output_size),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.network(x)
+
+
+class ReplayBuffer:
+    """Experience replay buffer for DQN."""
+
+    def __init__(self, capacity: int = 100000):
+        self.buffer = deque(maxlen=capacity)
+
+    def push(
+        self,
+        state: np.ndarray,
+        action: int,
+        reward: float,
+        next_state: np.ndarray,
+        done: bool
+    ):
+        """Add experience to buffer."""
+        self.buffer.append((state, action, reward, next_state, done))
+
+    def sample(self, batch_size: int) -> tuple:
+        """Sample a batch of experiences."""
+        batch = random.sample(self.buffer, batch_size)
+
+        states = np.array([e[0] for e in batch])
+        actions = np.array([e[1] for e in batch])
+        rewards = np.array([e[2] for e in batch])
+        next_states = np.array([e[3] for e in batch])
+        dones = np.array([e[4] for e in batch])
+
+        return states, actions, rewards, next_states, dones
+
+    def __len__(self) -> int:
+        return len(self.buffer)
+
+
+class DQNAgent:
+    """
+    DQN Agent for playing Flappy Bird.
+
+    Uses experience replay and a target network for stable learning.
+    """
+
+    def __init__(self, save_dir: Path = None):
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        print(f"Using device: {self.device}")
+
+        # Networks
+        self.policy_net = DQN().to(self.device)
+        self.target_net = DQN().to(self.device)
+        self.target_net.load_state_dict(self.policy_net.state_dict())
+        self.target_net.eval()
+
+        # Optimizer
+        self.optimizer = optim.Adam(self.policy_net.parameters(), lr=cfg.learning_rate)
+
+        # Replay buffer
+        self.memory = ReplayBuffer(cfg.memory_size)
+
+        # Exploration
+        self.epsilon = cfg.epsilon_start
+
+        # Training stats
+        self.episode = 0
+        self.total_steps = 0
+        self.best_score = 0
+        self.recent_scores: deque = deque(maxlen=100)
+        self.losses: deque = deque(maxlen=100)
+
+        # Save directory
+        self.save_dir = save_dir or Path("models/flappy_rl")
+        self.save_dir.mkdir(parents=True, exist_ok=True)
+
+    def select_action(self, state: np.ndarray, training: bool = True) -> int:
+        """
+        Select an action using epsilon-greedy policy.
+
+        Args:
+            state: Current observation
+            training: If True, use exploration. If False, be greedy.
+
+        Returns:
+            Action (0 = nothing, 1 = flap)
+        """
+        if training and random.random() < self.epsilon:
+            return random.randint(0, 1)
+
+        with torch.no_grad():
+            state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.device)
+            q_values = self.policy_net(state_tensor)
+            return q_values.argmax().item()
+
+    def store_transition(
+        self,
+        state: np.ndarray,
+        action: int,
+        reward: float,
+        next_state: np.ndarray,
+        done: bool
+    ):
+        """Store a transition in replay buffer."""
+        self.memory.push(state, action, reward, next_state, done)
+        self.total_steps += 1
+
+    def train_step(self) -> float | None:
+        """
+        Perform one training step.
+
+        Returns:
+            Loss value or None if not enough samples
+        """
+        if len(self.memory) < cfg.batch_size:
+            return None
+
+        # Sample batch
+        states, actions, rewards, next_states, dones = self.memory.sample(cfg.batch_size)
+
+        # Convert to tensors
+        states = torch.FloatTensor(states).to(self.device)
+        actions = torch.LongTensor(actions).to(self.device)
+        rewards = torch.FloatTensor(rewards).to(self.device)
+        next_states = torch.FloatTensor(next_states).to(self.device)
+        dones = torch.FloatTensor(dones).to(self.device)
+
+        # Compute current Q values
+        current_q = self.policy_net(states).gather(1, actions.unsqueeze(1))
+
+        # Compute target Q values
+        with torch.no_grad():
+            next_q = self.target_net(next_states).max(1)[0]
+            target_q = rewards + (1 - dones) * cfg.gamma * next_q
+
+        # Compute loss
+        loss = nn.MSELoss()(current_q.squeeze(), target_q)
+
+        # Optimize
+        self.optimizer.zero_grad()
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.policy_net.parameters(), 1.0)
+        self.optimizer.step()
+
+        loss_value = loss.item()
+        self.losses.append(loss_value)
+
+        return loss_value
+
+    def end_episode(self, score: int):
+        """Called at the end of each episode."""
+        self.episode += 1
+        self.recent_scores.append(score)
+
+        if score > self.best_score:
+            self.best_score = score
+            self.save("best")
+
+        # Decay epsilon
+        self.epsilon = max(cfg.epsilon_end, self.epsilon * cfg.epsilon_decay)
+
+        # Update target network
+        if self.episode % cfg.target_update == 0:
+            self.target_net.load_state_dict(self.policy_net.state_dict())
+
+    def get_stats(self) -> dict:
+        """Get current training statistics."""
+        avg_score = np.mean(self.recent_scores) if self.recent_scores else 0
+        avg_loss = np.mean(self.losses) if self.losses else 0
+
+        return {
+            "episode": self.episode,
+            "epsilon": round(self.epsilon, 4),
+            "best_score": self.best_score,
+            "avg_score_100": round(avg_score, 2),
+            "avg_loss": round(avg_loss, 6),
+            "memory_size": len(self.memory),
+            "total_steps": self.total_steps,
+        }
+
+    def save(self, name: str = "checkpoint"):
+        """Save model and training state."""
+        path = self.save_dir / f"{name}.pt"
+        torch.save({
+            "policy_net": self.policy_net.state_dict(),
+            "target_net": self.target_net.state_dict(),
+            "optimizer": self.optimizer.state_dict(),
+            "epsilon": self.epsilon,
+            "episode": self.episode,
+            "best_score": self.best_score,
+            "total_steps": self.total_steps,
+        }, path)
+        print(f"Saved model to {path}")
+
+    def load(self, name: str = "checkpoint") -> bool:
+        """Load model and training state."""
+        path = self.save_dir / f"{name}.pt"
+        if not path.exists():
+            print(f"No checkpoint found at {path}")
+            return False
+
+        try:
+            checkpoint = torch.load(path, map_location=self.device)
+            self.policy_net.load_state_dict(checkpoint["policy_net"])
+            self.target_net.load_state_dict(checkpoint["target_net"])
+            self.optimizer.load_state_dict(checkpoint["optimizer"])
+            self.epsilon = checkpoint["epsilon"]
+            self.episode = checkpoint["episode"]
+            self.best_score = checkpoint["best_score"]
+            self.total_steps = checkpoint["total_steps"]
+            print(f"Loaded model from {path}")
+            return True
+        except Exception as e:
+            print(f"Error loading checkpoint: {e}")
+            return False
+
+    def get_q_values(self, state: np.ndarray) -> np.ndarray:
+        """Get Q-values for visualization."""
+        with torch.no_grad():
+            state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.device)
+            q_values = self.policy_net(state_tensor)
+            return q_values.cpu().numpy()[0]
+
+    def get_network_activations(self, state: np.ndarray) -> list[np.ndarray]:
+        """Get intermediate activations for visualization."""
+        activations = []
+
+        with torch.no_grad():
+            x = torch.FloatTensor(state).unsqueeze(0).to(self.device)
+
+            for layer in self.policy_net.network:
+                x = layer(x)
+                if isinstance(layer, nn.Linear):
+                    activations.append(x.cpu().numpy()[0])
+
+        return activations
