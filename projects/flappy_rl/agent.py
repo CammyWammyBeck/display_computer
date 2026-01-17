@@ -96,6 +96,13 @@ class DQNAgent:
         self.recent_scores: deque = deque(maxlen=100)
         self.losses: deque = deque(maxlen=100)
 
+        # Full history for graphs (limited to last N episodes)
+        self.max_history = cfg.graph_history_length
+        self.score_history: list[int] = []
+        self.avg_history: list[float] = []
+        self.epsilon_history: list[float] = []
+        self.loss_history: list[float] = []
+
         # Save directory
         self.save_dir = save_dir or Path("models/flappy_rl")
         self.save_dir.mkdir(parents=True, exist_ok=True)
@@ -178,6 +185,21 @@ class DQNAgent:
         self.episode += 1
         self.recent_scores.append(score)
 
+        # Record history for graphs
+        self.score_history.append(score)
+        avg_score = np.mean(self.recent_scores)
+        self.avg_history.append(avg_score)
+        self.epsilon_history.append(self.epsilon)
+        avg_loss = np.mean(self.losses) if self.losses else 0
+        self.loss_history.append(avg_loss)
+
+        # Trim history to max length
+        if len(self.score_history) > self.max_history:
+            self.score_history = self.score_history[-self.max_history:]
+            self.avg_history = self.avg_history[-self.max_history:]
+            self.epsilon_history = self.epsilon_history[-self.max_history:]
+            self.loss_history = self.loss_history[-self.max_history:]
+
         if score > self.best_score:
             self.best_score = score
             self.save("best")
@@ -215,6 +237,12 @@ class DQNAgent:
             "episode": self.episode,
             "best_score": self.best_score,
             "total_steps": self.total_steps,
+            # History for graphs
+            "score_history": self.score_history,
+            "avg_history": self.avg_history,
+            "epsilon_history": self.epsilon_history,
+            "loss_history": self.loss_history,
+            "recent_scores": list(self.recent_scores),
         }, path)
         print(f"Saved model to {path}")
 
@@ -226,7 +254,7 @@ class DQNAgent:
             return False
 
         try:
-            checkpoint = torch.load(path, map_location=self.device)
+            checkpoint = torch.load(path, map_location=self.device, weights_only=False)
             self.policy_net.load_state_dict(checkpoint["policy_net"])
             self.target_net.load_state_dict(checkpoint["target_net"])
             self.optimizer.load_state_dict(checkpoint["optimizer"])
@@ -234,11 +262,30 @@ class DQNAgent:
             self.episode = checkpoint["episode"]
             self.best_score = checkpoint["best_score"]
             self.total_steps = checkpoint["total_steps"]
-            print(f"Loaded model from {path}")
+
+            # Load history if available (backwards compatibility)
+            self.score_history = checkpoint.get("score_history", [])
+            self.avg_history = checkpoint.get("avg_history", [])
+            self.epsilon_history = checkpoint.get("epsilon_history", [])
+            self.loss_history = checkpoint.get("loss_history", [])
+
+            recent = checkpoint.get("recent_scores", [])
+            self.recent_scores = deque(recent, maxlen=100)
+
+            print(f"Loaded model from {path} (episode {self.episode}, best: {self.best_score})")
             return True
         except Exception as e:
             print(f"Error loading checkpoint: {e}")
             return False
+
+    def get_history(self) -> dict:
+        """Get training history for graph restoration."""
+        return {
+            "scores": self.score_history.copy(),
+            "averages": self.avg_history.copy(),
+            "epsilons": self.epsilon_history.copy(),
+            "losses": self.loss_history.copy(),
+        }
 
     def get_q_values(self, state: np.ndarray) -> np.ndarray:
         """Get Q-values for visualization."""

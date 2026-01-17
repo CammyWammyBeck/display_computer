@@ -110,13 +110,19 @@ class FlappyRLProject(BaseProject):
         self.renderer = FlappyRenderer(screen)
         self.training_renderer = TrainingRenderer(screen)
 
-        # Try to load existing model
-        self.agent.load("best")
+        # Try to load existing model and restore history
+        if self.agent.load("best"):
+            self._restore_graph_history()
 
         # Initial state
         self.current_state = self.game.reset()
 
         print("Flappy RL initialized")
+
+    def _restore_graph_history(self):
+        """Restore training history to graphs after loading a model."""
+        history = self.agent.get_history()
+        self.training_renderer.load_history(history)
 
     def update(self, dt: float):
         """Update game and training."""
@@ -398,6 +404,8 @@ class FlappyRLProject(BaseProject):
 
         elif command == "load":
             success = self.agent.load("best")
+            if success:
+                self._restore_graph_history()
             return {
                 "status": "ok" if success else "error",
                 "message": "Loaded best model" if success else "No model found"

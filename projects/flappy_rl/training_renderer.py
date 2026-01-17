@@ -148,6 +148,32 @@ class TrainingRenderer:
             self.loss_graph.add_point(loss)
         self.update_episode_rate()
 
+    def load_history(self, history: dict):
+        """Load training history into graphs."""
+        # Clear existing data
+        self.score_graph.clear()
+        self.avg_graph.clear()
+        self.epsilon_graph.clear()
+        self.loss_graph.clear()
+
+        # Load history
+        scores = history.get("scores", [])
+        averages = history.get("averages", [])
+        epsilons = history.get("epsilons", [])
+        losses = history.get("losses", [])
+
+        for score in scores:
+            self.score_graph.add_point(score)
+        for avg in averages:
+            self.avg_graph.add_point(avg)
+        for eps in epsilons:
+            self.epsilon_graph.add_point(eps)
+        for loss in losses:
+            if loss > 0:
+                self.loss_graph.add_point(loss)
+
+        print(f"Loaded {len(scores)} episodes of history into graphs")
+
     def set_preview_state(self, game_state: dict):
         """Set the game state for mini preview."""
         self.preview_game_state = game_state
