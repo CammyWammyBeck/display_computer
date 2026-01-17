@@ -123,7 +123,7 @@ class FlappyGame:
             observation, reward, done, info
         """
         if self.done:
-            return self._get_observation(), 0.0, True, {}
+            return self._get_observation(), 0.0, True, {"score": self.score}
 
         # Apply action
         if action == 1:
